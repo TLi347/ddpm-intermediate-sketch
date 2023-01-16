@@ -1,8 +1,8 @@
 {
-    "exp_dir": "pixel_classifiers/horse_21/ddpm",
+    "exp_dir": "pixel_classifiers/horse_21/dim=120",
     "model_type": "ddpm",
     
-    "category": "horse_21",
+    "category": "dim=120",
     "number_class": 3,
     "ignore_label": 255,
   
@@ -14,9 +14,9 @@
     "testing_edge_path": "datasets/horse_21/real/test_edge",
     "model_path": "checkpoints/ddpm/lsun_horse.pt",
   
-    "dim": [256, 256, 6656],
-    "edge_dim": [256, 256, 3],
-    "steps": [600],
+    "dim": [120, 120, 6656],
+    "edge_dim": [120, 120, 3],
+    "steps": [500],
     "blocks": [2,4,8,0,1,2,2,4,8],
   
     "model_num": 3,

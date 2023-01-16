@@ -3,13 +3,12 @@ import torch.nn as nn
 from tqdm import tqdm
 import json
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="1,2,3,4,5,6,7,"
+os.environ["CUDA_VISIBLE_DEVICES"]="1,3,4,"
 import gc
 import numpy as np 
 
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-log_wirter = SummaryWriter('./pixel_classifiers/horse_21/ddpm')
 
 import argparse
 from src.utils import setup_seed, multi_acc
@@ -248,7 +247,7 @@ def train(args):
         break_count = 0
         best_loss = 10000000
         stop_sign = 0
-        for epoch in range(500):
+        for epoch in range(100):
             for X_batch, y_batch in train_loader:
                 X_batch, y_batch = X_batch.to(dev()), y_batch.to(dev())
         #         # y_batch = y_batch.type(torch.long)
@@ -275,16 +274,15 @@ def train(args):
                     print('Epoch : ', str(epoch), 'iteration', iteration, ' Validation starting...')
                     preds, gts, suc_gts, uncertainty_scores = [], [], [], []
                     for validation_batch_id in range(args['validation_sample_num']):
-                        validation_batch_size = args['image_size']**2
-                        validation_X_batch = validation_data[:][0][validation_batch_size*validation_batch_id:validation_batch_size*(validation_batch_id+1)].to(dev())
-                        validation_y_batch = validation_data[:][1][validation_batch_size*validation_batch_id:validation_batch_size*(validation_batch_id+1)].to(dev())
+                        validation_X_batch = validation_data[:][0][65536*validation_batch_id:65536*(validation_batch_id+1)].to(dev())
+                        validation_y_batch = validation_data[:][1][65536*validation_batch_id:65536*(validation_batch_id+1)].to(dev())
                         
                         with torch.no_grad():
                             pred = classifier(validation_X_batch)
                             validation_loss = criterion(pred, validation_y_batch)
-                            pred = pred.reshape([args['image_size'],args['image_size'],3]).permute(2,0,1)
+                            pred = pred.reshape([256,256,3]).permute(2,0,1)
                         
-                        gts.append(validation_y_batch.reshape([args['image_size'],args['image_size'],3]).permute(2,0,1))
+                        gts.append(validation_y_batch.reshape([256,256,3]).permute(2,0,1))
                         preds.append(pred)
                     
                     ref = torch.cat(gts,dim=2).clamp(0,1).cpu().detach().numpy()
@@ -319,18 +317,21 @@ def train(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    # parser.add_argument('--attention_resolutions', type=str, default="32,16,8")
-    # parser.add_argument('--class_cond', type=bool,  default=True)
-    # parser.add_argument('--diffusion_steps', type=int, default=1000)
-    # parser.add_argument('--dropout', type=float, default=0.1)
     # parser.add_argument('--learn_sigma', type=bool,  default=True)
+    # parser.add_argument('--diffusion_steps', type=int, default=1000)
     # parser.add_argument('--noise_schedule', type=str, default="linear")
-    # parser.add_argument('--num_channels', type=int, default=192)
+    
+    # parser.add_argument('--image_size', type=str, default=256)
+    # parser.add_argument('--num_channels', type=int, default=256)
+    # parser.add_argument('--num_res_blocks', type=int, default=2)
     # parser.add_argument('--num_head_channels', type=int, default=64)
-    # parser.add_argument('--num_res_blocks', type=int, default=3)
+    # parser.add_argument('--attention_resolutions', type=str, default="32,16,8")
+    # parser.add_argument('--dropout', type=float, default=0.1)
+    # parser.add_argument('--class_cond', type=bool,  default=False)
+    # parser.add_argument('--use_scale_shift_norm', type=bool,  default=True)
     # parser.add_argument('--resblock_updown', type=bool,  default=True)
     # parser.add_argument('--use_fp16', type=bool,  default=True)
-    # parser.add_argument('--use_scale_shift_norm', type=bool,  default=True)
+    
     
     parser.add_argument('--validation_sample_num', type=int, default=8)
     add_dict_to_argparser(parser, model_and_diffusion_defaults())
@@ -346,6 +347,7 @@ if __name__ == '__main__':
     opts.update(vars(args))
     opts['image_size'] = opts['dim'][0]
 
+    log_wirter = SummaryWriter('./pixel_classifiers/horse_21/ddpm')
     # Prepare the experiment folder 
     if len(opts['steps']) > 0:
         suffix = '_'.join([str(step) for step in opts['steps']])
@@ -366,6 +368,6 @@ if __name__ == '__main__':
         opts['start_model_num'] = sum(pretrained)
         train(opts)
     
-    # print('Loading pretrained models...')
-    # models = load_ensemble(opts, device='cuda')
-    # evaluation(opts, models)
+    print('Loading pretrained models...')
+    models = load_ensemble(opts, device='cuda')
+    evaluation(opts, models)

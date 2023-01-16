@@ -89,7 +89,8 @@ def predict_labels(models, features, size):
             else:
                 mean_seg += softmax_f(preds)
 
-            img_seg = oht_to_scalar(preds)
+            # img_seg = oht_to_scalar(preds)
+            img_seg = preds
             img_seg = img_seg.reshape(*size)
             img_seg = img_seg.cpu().detach()
 
@@ -103,23 +104,29 @@ def predict_labels(models, features, size):
         top_k = js.sort()[0][- int(js.shape[0] / 10):].mean()
 
         img_seg_final = torch.stack(seg_mode_ensemble, dim=-1)
-        img_seg_final = torch.mode(img_seg_final, 2)[0]
+        # img_seg_final = torch.mode(img_seg_final, 3)[0]
+        img_seg_final = img_seg_final.mean(dim=3)
     return img_seg_final, top_k
 
-
-def save_predictions(args, image_paths, preds):
+from skimage.io import imsave
+def save_predictions(args, image_paths, preds, fp_name='visualizations'):
     palette = get_palette(args['category'])
     os.makedirs(os.path.join(args['exp_dir'], 'predictions'), exist_ok=True)
-    os.makedirs(os.path.join(args['exp_dir'], 'visualizations'), exist_ok=True)
+    os.makedirs(os.path.join(args['exp_dir'], fp_name), exist_ok=True)
 
     for i, pred in enumerate(preds):
         filename = image_paths[i].split('/')[-1].split('.')[0]
-        pred = np.squeeze(pred)
-        np.save(os.path.join(args['exp_dir'], 'predictions', filename + '.npy'), pred)
+        # pred = np.squeeze(pred)
+        # np.save(os.path.join(args['exp_dir'], 'predictions', filename + '.npy'), pred)
 
-        mask = colorize_mask(pred, palette)
-        Image.fromarray(mask).save(
-            os.path.join(args['exp_dir'], 'visualizations', filename + '.jpg')
+        # mask = colorize_mask(pred, palette)
+        # Image.fromarray(mask).save(
+        #     os.path.join(args['exp_dir'], name, filename + '.jpg')
+        # )
+        
+        print(pred.shape, pred.dtype, pred.min(), pred.max())
+        Image.fromarray(pred).convert('RGB').save(
+            os.path.join(args['exp_dir'], fp_name, filename + '.jpg')
         )
 
 

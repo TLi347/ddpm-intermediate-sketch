@@ -1,22 +1,24 @@
 {
-  "exp_dir": "pixel_classifiers/bedroom_28/ddpm",
-  "model_type": "ddpm",
+  "exp_dir": "pixel_classifiers/ldm",
+  "model_type": "ldm",
   
   "category": "bedroom_28",
-  "number_class": 29,
+  "number_class": 3,
   "ignore_label": 0,
 
   "training_path": "datasets/bedroom_28/real/train",
   "validation_path": "datasets/bedroom_28/ddpm",
   "testing_path": "datasets/bedroom_28/real/test",
-  "model_path": "checkpoints/ddpm/lsun_bedroom.pt",
+  "training_edge_path": "datasets/horse_21/real/train_edge",
+  "validation_edge_path": "datasets/horse_21/ddpm_edge",
+  "testing_edge_path": "datasets/horse_21/real/test_edge",
+  "model_path": "experiments/bedroom_28/pokemon.yaml",
 
-  "dim": [256, 256, 8448],
+  "dim": [256, 256, 6656],
   "steps": [500],
-  "blocks": [5, 6, 7, 8, 12],
   "edge_dim": [256, 256, 3],
-
-  "model_num": 10,
+  
+  "model_num": 3,
   "batch_size": 64,
   "max_training": 30,
   

@@ -3,13 +3,12 @@ import torch.nn as nn
 from tqdm import tqdm
 import json
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="1,2,3,4,5,6,7,"
+os.environ["CUDA_VISIBLE_DEVICES"]="1,3,4,5"
 import gc
 import numpy as np 
 
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-log_wirter = SummaryWriter('./pixel_classifiers/horse_21/ddpm')
 
 import argparse
 from src.utils import setup_seed, multi_acc
@@ -22,40 +21,54 @@ from guided_diffusion.dist_util import dev
 
 from torchvision.utils import save_image
 
-# x = torch.from_numpy(np.random.uniform(0,100,size=(8,2048))).to(dtype=torch.float32).cuda()
-# x.requires_grad=True
-# target = torch.ones_like(x)*5
-# target.requires_grad=True
-# model = nn.Sequential( 
-#         nn.Linear(2048, 2048),
-#         nn.ReLU(),
-#         nn.Linear(2048, 2048),
-#         nn.ReLU(),
-# ).cuda()
-# loss_fn = nn.MSELoss()
-# opt = torch.optim.Adam(model.parameters(), lr=0.1)
+from guided_diffusion.script_util import (
+    NUM_CLASSES,
+    model_and_diffusion_defaults,
+    classifier_defaults,
+    create_model_and_diffusion,
+    create_classifier,
+    add_dict_to_argparser,
+    args_to_dict,
+)
+def create_argparser():
+    defaults = dict(
+        clip_denoised=True,
+        num_samples=20,
+        batch_size=2,
+        use_ddim=False,
+        model_path="/data2/tli/ddpm-segmentation/checkpoints/ddpm/lsun_horse.pt",
+        classifier_path="../models/64x64_classifier.pt",
+        classifier_scale=1.0,
+        
+        exp="/data2/tli/ddpm-segmentation/pixel_classifiers/horse_21/ddpm/500_2_4_8_0_1_2_2_4_8/ddpm.json",
+    )
+    defaults.update(model_and_diffusion_defaults())
+    defaults.update(classifier_defaults())
+    parser = argparse.ArgumentParser()
+    add_dict_to_argparser(parser, defaults)
+    return parser
+import guided_diffusion.dist_util as dist_util
+args = create_argparser().parse_args()
+model, diffusion = create_model_and_diffusion(
+    **args_to_dict(args, model_and_diffusion_defaults().keys())
+)
+model.load_state_dict(
+    dist_util.load_state_dict(args.model_path, map_location="cpu")
+)
+model.to(dist_util.dev())
+if args.use_fp16:
+    model.convert_to_fp16()
+model.eval()
 
-# model.train()
-# for i in range(200):
-#     pred = model(x)
-#     loss = loss_fn(pred,target)
-#     print(i, ' loss = ', loss.mean().item())
-#     loss.backward()
-#     opt.step()
-    
-#     if i>9 and i%10==0 and i<50:
-#         with torch.no_grad():
-#             for ii in range(5):
-#                 pred = model(x)
-#                 loss = loss_fn(pred,target)
-#                 print(ii, 'no grad  ', i, ' loss = ', loss.mean().item())
-
-# print(model(x)[:2,:5])
-# print(target[:2,:5])
-
+def unet_feature_extractor(img, noise=None):
+    t = torch.tensor([500]).to(img.device)
+    x_t = diffusion.q_sample(img, t, noise=noise)
+    # activations: list, len=9, [B,192,64,64], [B,192,32,32], [B,192,16,16]
+    activations = model.features_extractor(x_t, diffusion._scale_timesteps(t))
+    return activations
 
 def prepare_test_data(args,is_test):
-    feature_extractor = create_feature_extractor(**args)
+    # feature_extractor = create_feature_extractor(**args)
     
     if is_test:
         print(f"Preparing the test set for {args['category']}...")
@@ -85,7 +98,7 @@ def prepare_test_data(args,is_test):
 
     for row, (img, edge_img, txt) in enumerate(tqdm(dataset)):
         img = img[None].to(dev())
-        features = feature_extractor(img, noise=noise)
+        features = unet_feature_extractor(img, noise=noise)
         X[row] = collect_features(args, features).cpu()
         edge_img = edge_img[None].to(dev())
         y[row] = edge_img
@@ -100,18 +113,9 @@ def prepare_test_data(args,is_test):
     return X, y
 
 def prepare_data(args):
-    feature_extractor = create_feature_extractor(**args)
+    # feature_extractor = create_feature_extractor(**args)
     
     print(f"Preparing the train set for {args['category']}...")
-    # dataset = ImageLabelDataset(
-    #     data_dir=args['training_path'],
-    #     resolution=args['image_size'],
-    #     num_images=args['training_number'],
-    #     transform=make_transform(
-    #         args['model_type'],
-    #         args['image_size']
-    #     )
-    # )
     dataset = ImageDataset(
         data_dir=args['training_path'],
         resolution=args['image_size'],
@@ -131,24 +135,11 @@ def prepare_data(args):
 
     for row, (img, edge_img, txt) in enumerate(tqdm(dataset)):
         img = img[None].to(dev())
-        features = feature_extractor(img, noise=noise)
+        features = unet_feature_extractor(img, noise=noise)
         X[row] = collect_features(args, features).cpu()
         
-        # for target in range(args['number_class']):
-        #     if target == args['ignore_label']: continue
-        #     if 0 < (label == target).sum() < 20:
-        #         print(f'Delete small annotation from image {dataset.image_paths[row]} | label {target}')
-        #         label[label == target] = args['ignore_label']
         edge_img = edge_img[None].to(dev())
         y[row] = edge_img
-        
-        # tmp_X = torch.mean(X[row],dim=0,keepdim=True)
-        # tmp_X = (tmp_X-tmp_X.min())/(tmp_X.max()-tmp_X.min())
-        # tmp_y = y[row]
-        # tmp_y = (tmp_y-tmp_y.min())/(tmp_y.max()-tmp_y.min())
-        # print(X[row].shape, y[row].shape, tmp_X.shape)
-        # save_image(tmp_X, f"pixel_classifiers/horse_21/X_{row}.png")
-        # save_image(tmp_y, f"pixel_classifiers/horse_21/y_{row}.png")
         
     
     print(' X 1 = ', X.shape, y.shape)
@@ -163,16 +154,7 @@ def prepare_data(args):
 
 
 def evaluation(args, models):
-    feature_extractor = create_feature_extractor(**args)
-    # dataset = ImageLabelDataset(
-    #     data_dir=args['testing_path'],
-    #     resolution=args['image_size'],
-    #     num_images=args['testing_number'],
-    #     transform=make_transform(
-    #         args['model_type'],
-    #         args['image_size']
-    #     )
-    # )
+    # feature_extractor = create_feature_extractor(**args)
     dataset = ImageDataset(
         data_dir=args['testing_path'],
         resolution=args['image_size'],
@@ -189,7 +171,7 @@ def evaluation(args, models):
     preds, gts, uncertainty_scores = [], [], []
     for img, edge_img, txt in tqdm(dataset):        
         img = img[None].to(dev())
-        features = feature_extractor(img, noise=noise)
+        features = unet_feature_extractor(img, noise=noise)
         features = collect_features(args, features)
         
         edge_img = edge_img[None]
@@ -248,15 +230,9 @@ def train(args):
         break_count = 0
         best_loss = 10000000
         stop_sign = 0
-        for epoch in range(500):
+        for epoch in range(100):
             for X_batch, y_batch in train_loader:
                 X_batch, y_batch = X_batch.to(dev()), y_batch.to(dev())
-        #         # y_batch = y_batch.type(torch.long)
-        #         print('X_batch = ', X_batch.shape, X_batch.min(), X_batch.max())
-        #         print('y_batch = ', y_batch.shape, y_batch.min(), y_batch.max())
-        #         break
-        #     break
-        # break
 
                 optimizer.zero_grad()
                 y_pred = classifier(X_batch)
@@ -275,16 +251,15 @@ def train(args):
                     print('Epoch : ', str(epoch), 'iteration', iteration, ' Validation starting...')
                     preds, gts, suc_gts, uncertainty_scores = [], [], [], []
                     for validation_batch_id in range(args['validation_sample_num']):
-                        validation_batch_size = args['image_size']**2
-                        validation_X_batch = validation_data[:][0][validation_batch_size*validation_batch_id:validation_batch_size*(validation_batch_id+1)].to(dev())
-                        validation_y_batch = validation_data[:][1][validation_batch_size*validation_batch_id:validation_batch_size*(validation_batch_id+1)].to(dev())
+                        validation_X_batch = validation_data[:][0][65536*validation_batch_id:65536*(validation_batch_id+1)].to(dev())
+                        validation_y_batch = validation_data[:][1][65536*validation_batch_id:65536*(validation_batch_id+1)].to(dev())
                         
                         with torch.no_grad():
                             pred = classifier(validation_X_batch)
                             validation_loss = criterion(pred, validation_y_batch)
-                            pred = pred.reshape([args['image_size'],args['image_size'],3]).permute(2,0,1)
+                            pred = pred.reshape([256,256,3]).permute(2,0,1)
                         
-                        gts.append(validation_y_batch.reshape([args['image_size'],args['image_size'],3]).permute(2,0,1))
+                        gts.append(validation_y_batch.reshape([256,256,3]).permute(2,0,1))
                         preds.append(pred)
                     
                     ref = torch.cat(gts,dim=2).clamp(0,1).cpu().detach().numpy()
@@ -319,23 +294,11 @@ def train(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    # parser.add_argument('--attention_resolutions', type=str, default="32,16,8")
-    # parser.add_argument('--class_cond', type=bool,  default=True)
-    # parser.add_argument('--diffusion_steps', type=int, default=1000)
-    # parser.add_argument('--dropout', type=float, default=0.1)
-    # parser.add_argument('--learn_sigma', type=bool,  default=True)
-    # parser.add_argument('--noise_schedule', type=str, default="linear")
-    # parser.add_argument('--num_channels', type=int, default=192)
-    # parser.add_argument('--num_head_channels', type=int, default=64)
-    # parser.add_argument('--num_res_blocks', type=int, default=3)
-    # parser.add_argument('--resblock_updown', type=bool,  default=True)
-    # parser.add_argument('--use_fp16', type=bool,  default=True)
-    # parser.add_argument('--use_scale_shift_norm', type=bool,  default=True)
     
     parser.add_argument('--validation_sample_num', type=int, default=8)
     add_dict_to_argparser(parser, model_and_diffusion_defaults())
 
-    parser.add_argument('--exp', type=str, default="experiments/horse_21/ddpm.json")
+    parser.add_argument('--exp', type=str, default="experiments/horse_21/unet_ddpm.json")
     parser.add_argument('--seed', type=int,  default=0)
 
     args = parser.parse_args()
@@ -346,6 +309,7 @@ if __name__ == '__main__':
     opts.update(vars(args))
     opts['image_size'] = opts['dim'][0]
 
+    log_wirter = SummaryWriter('./pixel_classifiers/horse_21/unet_ddpm2')
     # Prepare the experiment folder 
     if len(opts['steps']) > 0:
         suffix = '_'.join([str(step) for step in opts['steps']])
@@ -366,6 +330,6 @@ if __name__ == '__main__':
         opts['start_model_num'] = sum(pretrained)
         train(opts)
     
-    # print('Loading pretrained models...')
-    # models = load_ensemble(opts, device='cuda')
-    # evaluation(opts, models)
+    print('Loading pretrained models...')
+    models = load_ensemble(opts, device='cuda')
+    evaluation(opts, models)

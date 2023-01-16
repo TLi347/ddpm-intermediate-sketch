@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
-from guided_diffusion.guided_diffusion.image_datasets import _list_image_files_recursively
+from guided_diffusion.image_datasets import _list_image_files_recursively
 
 
 def make_transform(model_type: str, resolution: int):
@@ -50,6 +50,69 @@ class FeatureDataset(Dataset):
     def __len__(self):
         return len(self.X_data)
 
+import os
+import glob
+class ImageDataset(Dataset):
+    def __init__(
+        self,
+        data_dir: str,
+        resolution: int,
+    ):
+        super().__init__()
+        # self.image_paths = _list_image_files_recursively(data_dir)
+        # self.image_paths = sorted(self.image_paths)
+        self.image_paths = data_dir
+        self.edge_image_paths = data_dir+"_edge"
+        tmp_image_id_lst = glob.glob( os.path.join(data_dir,'*.png') )
+        self.image_id_lst = []
+        for i in range(len(tmp_image_id_lst)):
+            self.image_id_lst.append( tmp_image_id_lst[i].split('/')[-1] )
+        self.resolution = resolution
+        
+        from torchvision import transforms
+        from einops import rearrange
+        image_transforms = [transforms.ToTensor(),
+                            transforms.Lambda(lambda x: rearrange(x * 2. - 1., 'c h w -> c h w'))]
+        self.tform = transforms.Compose(image_transforms)
+        
+        cond_image_transforms = [transforms.ToTensor(),
+                                transforms.Lambda(lambda x: rearrange(x * 2. - 1., 'c h w -> c h w'))]
+        self.cond_tform = transforms.Compose(cond_image_transforms)
+        
+
+    def __len__(self):
+        return len(self.image_id_lst)
+
+    def __getitem__(self, idx):
+        example = dict()
+        
+        # example["image"] = self.preprocess_image( '/data2/tli/guided-diffusion/datasets/edge_img/img.png' )
+        # example["edge_img"] = self.preprocess_cond_image( '/data2/tli/guided-diffusion/datasets/edge_img/edge.png' )
+        
+        example["txt"] = "a bird is standing on grass"
+        example["image"] = self.preprocess_image(  os.path.join(self.image_paths, self.image_id_lst[idx]) )
+        example["cond_image"] = self.preprocess_cond_image( os.path.join(self.edge_image_paths, self.image_id_lst[idx]) )
+
+        return example["image"], example["cond_image"], example["txt"]
+    
+    def preprocess_image(self, image_path):
+        image = Image.open(image_path)
+        if not image.mode == "RGB":
+            image = image.convert("RGB")
+        image = image.resize(( 256, 256))
+        image = self.tform(image)
+        return image
+    
+    # # 4 skecth image 
+    def preprocess_cond_image(self, image_path):
+        image = Image.open(image_path)
+        if not image.mode == "RGB":
+            image = image.convert("RGB")
+        image = image.resize(( 120, 120))
+        image = self.cond_tform(image)
+        return image
+        
+        
 
 class ImageLabelDataset(Dataset):
     ''' 

@@ -21,6 +21,9 @@ def create_feature_extractor(model_type, **kwargs):
     elif model_type == 'swav_w2':
         print("Creating SwAVw2 Feature Extractor...")
         feature_extractor = FeatureExtractorSwAVw2(**kwargs)
+    elif model_type == 'ldm':
+        print("Creating LDM Feature Extractor...")
+        feature_extractor = FeatureExtractorLDM(**kwargs)
     else:
         raise Exception(f"Wrong model type: {model_type}")
     return feature_extractor
@@ -81,16 +84,34 @@ class FeatureExtractorDDPM(FeatureExtractor):
         super().__init__(**kwargs)
         self.steps = steps
         
+        # # Save decoder activations
+        # for idx, block in enumerate(self.model.output_blocks):
+        #     if idx in blocks:
+        #         block.register_forward_hook(self.save_hook)
+        #         self.feature_blocks.append(block)
+        
+        
         # Save decoder activations
+        feature_from_in_block = [2,4,8]
+        for idx, block in enumerate(self.model.input_blocks):
+            if idx in feature_from_in_block:
+                block.register_forward_hook(self.save_hook)
+                self.feature_blocks.append(block)
+        feature_from_mid_block = [0,1,2]
+        for idx, block in enumerate(self.model.middle_block):
+            if idx in feature_from_mid_block:
+                block.register_forward_hook(self.save_hook)
+                self.feature_blocks.append(block)
+        feature_from_out_block = [2,4,8]
         for idx, block in enumerate(self.model.output_blocks):
-            if idx in blocks:
+            if idx in feature_from_out_block:
                 block.register_forward_hook(self.save_hook)
                 self.feature_blocks.append(block)
 
     def _load_pretrained_model(self, model_path, **kwargs):
         import inspect
-        import guided_diffusion.guided_diffusion.dist_util as dist_util
-        from guided_diffusion.guided_diffusion.script_util import create_model_and_diffusion
+        import guided_diffusion.dist_util as dist_util
+        from guided_diffusion.script_util import create_model_and_diffusion
 
         # Needed to pass only expected args to the function
         argnames = inspect.getfullargspec(create_model_and_diffusion)[0]
@@ -104,15 +125,124 @@ class FeatureExtractorDDPM(FeatureExtractor):
         if kwargs['use_fp16']:
             self.model.convert_to_fp16()
         self.model.eval()
+        
+        classes = torch.randint(
+            low=0, high=1, size=( 1,)
+        )
+        self.classes = (torch.ones_like(classes)*339).to(device=dist_util.dev())
 
     @torch.no_grad()
     def forward(self, x, noise=None):
-        activations = []
+        activations_batch = []
         for t in self.steps:
+            activations = []
             # Compute x_t and run DDPM
             t = torch.tensor([t]).to(x.device)
             noisy_x = self.diffusion.q_sample(x, t, noise=noise)
             self.model(noisy_x, self.diffusion._scale_timesteps(t))
+
+            # Extract activations
+            for block in self.feature_blocks:
+                activations.append(block.activations)
+                block.activations = None
+            
+            activations_batch.append(activations)
+
+        # Per-layer list of activations [N, C, H, W]
+        return activations_batch
+
+
+
+from omegaconf import OmegaConf
+from src.ldmutil import instantiate_from_config
+class FeatureExtractorLDM(FeatureExtractor):
+    ''' 
+    Wrapper to extract features from pretrained DDPMs.
+            
+    :param steps: list of diffusion steps t.
+    :param blocks: list of the UNet decoder blocks.
+    '''
+    
+    def __init__(self, steps: List[int], **kwargs):
+        super().__init__(**kwargs)
+        self.steps = steps
+        
+        # Save decoder activations
+        feature_from_in_block = [2,4,8]
+        for idx, block in enumerate(self.model.model.diffusion_model.input_blocks):
+            if idx in feature_from_in_block:
+                block.register_forward_hook(self.save_hook)
+                self.feature_blocks.append(block)
+        feature_from_mid_block = [0,1,2]
+        for idx, block in enumerate(self.model.model.diffusion_model.middle_block):
+            if idx in feature_from_mid_block:
+                block.register_forward_hook(self.save_hook)
+                self.feature_blocks.append(block)
+        feature_from_out_block = [2,4,8]
+        for idx, block in enumerate(self.model.model.diffusion_model.output_blocks):
+            if idx in feature_from_out_block:
+                block.register_forward_hook(self.save_hook)
+                self.feature_blocks.append(block)
+
+    def _load_pretrained_model(self, model_path, **kwargs):
+        import guided_diffusion.dist_util as dist_util
+        
+        configs = OmegaConf.load(model_path)
+        # cli = OmegaConf.from_dotlist(unknown)
+        config = configs
+        self.model = instantiate_from_config(config.model)
+        # self.model.load_state_dict(
+        #     dist_util.load_state_dict(config.ckpt_path, map_location="cpu")
+        # )
+        def rank_zero_print(*args):
+            print(*args)
+
+        def modify_weights(w, scale = 1e-6):
+            """Modify weights to accomodate concatenation to unet"""
+            extra_w = scale*torch.randn_like(w)
+            new_w = torch.cat((w, extra_w), dim=1)
+            return new_w
+        
+        print(f"Attempting to load state from {config.ckpt_path}")
+        old_state = torch.load(config.ckpt_path, map_location="cpu")
+        if "state_dict" in old_state:
+            print(f"Found nested key 'state_dict' in checkpoint, loading this instead")
+            old_state = old_state["state_dict"]
+
+        #Check if we need to port weights from 4ch input to 8ch
+        in_filters_load = old_state["model.diffusion_model.input_blocks.0.0.weight"]
+        new_state = self.model.state_dict()
+        in_filters_current = new_state["model.diffusion_model.input_blocks.0.0.weight"]
+        if in_filters_current.shape != in_filters_load.shape:
+            print("Modifying weights to double number of input channels")
+            keys_to_change = [
+                "model.diffusion_model.input_blocks.0.0.weight",
+                "model_ema.diffusion_modelinput_blocks00weight",
+            ]
+            scale = 1e-8
+            for k in keys_to_change:
+                old_state[k] = modify_weights(old_state[k], scale=scale)
+        
+        m, u = self.model.load_state_dict(old_state, strict=False)
+        if len(m) > 0:
+            rank_zero_print("missing keys:")
+            rank_zero_print(m)
+        if len(u) > 0:
+            rank_zero_print("unexpected keys:")
+            rank_zero_print(u)
+        
+        self.model.to(dist_util.dev())
+        self.model.eval()
+
+    @torch.no_grad()
+    def forward(self, x, cond, noise=None):
+        cond = self.model.get_learned_conditioning(cond)
+        activations = []
+        for t in self.steps:
+            # Compute x_t and run DDPM
+            t = torch.tensor([t]).to(x.device)
+            noisy_x = self.model.q_sample(x, t, noise=noise)
+            self.model.apply_model(noisy_x, t, cond)
 
             # Extract activations
             for block in self.feature_blocks:
@@ -233,6 +363,8 @@ class FeatureExtractorSwAVw2(FeatureExtractorSwAV):
 
 def collect_features(args, activations: List[torch.Tensor], sample_idx=0):
     """ Upsample activations and concatenate them to form a feature tensor """
+    # for i in range(len(activations)):
+    #     print(i, ',  ', activations[i].shape)
     assert all([isinstance(acts, torch.Tensor) for acts in activations])
     size = tuple(args['dim'][:-1])
     resized_activations = []
@@ -243,4 +375,6 @@ def collect_features(args, activations: List[torch.Tensor], sample_idx=0):
         )
         resized_activations.append(feats[0])
     
+    # for i in range(len(resized_activations)):
+    #     print(i, ',  ', resized_activations[i].shape)
     return torch.cat(resized_activations, dim=0)
